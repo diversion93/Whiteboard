@@ -15,12 +15,6 @@
                     <span>Your color:</span>
                     <div id="userColorDisplay" class="color-circle"></div>
                 </div>
-                <button id="resetBtn" class="reset-btn">🗑️ Reset Whiteboard</button>
-            </div>
-            <div class="admin-controls">
-                <input type="password" id="adminPinInput" placeholder="Enter Admin PIN" />
-                <button id="adminAuthBtn" class="admin-btn">Authenticate</button>
-                <button id="lockToggleBtn" class="lock-btn" style="display: none;">Lock Board</button>
             </div>
         </header>
         
@@ -33,6 +27,15 @@
             <p id="connectionStatus" class="status">Connecting...</p>
             <p id="lockNotice" class="lock-notice" style="display: none;">🔒 Board is locked by admin</p>
             <p id="cooldownNotice" class="cooldown-notice" style="display: none;"></p>
+        </div>
+        
+        <div class="control-bar">
+            <button id="resetBtn" class="reset-btn"><span class="btn-text-full">🗑️ Reset Whiteboard</span><span class="btn-text-short">🗑️ Reset</span></button>
+            <div class="admin-controls">
+                <input type="password" id="adminPinInput" placeholder="Enter Admin PIN" />
+                <button id="adminAuthBtn" class="admin-btn"><span class="btn-text-full">Authenticate</span><span class="btn-text-short">Auth</span></button>
+                <button id="lockToggleBtn" class="lock-btn" style="display: none;">Lock Board</button>
+            </div>
         </div>
     </div>
 

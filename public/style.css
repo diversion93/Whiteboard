@@ -216,27 +216,140 @@ h1 {
     color: #856404;
 }
 
+/* Control bar - positioned in header on desktop */
+.control-bar {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    flex-wrap: wrap;
+    background: #34495e;
+    padding: 15px 20px;
+}
+
+.btn-text-short {
+    display: none;
+}
+
+.btn-text-full {
+    display: inline;
+}
+
 /* Mobile responsiveness */
 @media (max-width: 768px) {
     body {
-        padding: 10px;
+        padding: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+    }
+    
+    .container {
+        border-radius: 0;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        max-height: 100vh;
+        overflow: hidden;
     }
     
     header {
-        flex-direction: column;
-        text-align: center;
+        padding: 10px 15px;
+        flex-wrap: nowrap;
+        justify-content: center;
+        gap: 10px;
+        min-height: auto;
+    }
+    
+    h1 {
+        font-size: 1.1rem;
+        font-weight: 600;
     }
     
     .controls {
         justify-content: center;
     }
     
-    h1 {
-        font-size: 1.5rem;
+    .color-indicator {
+        font-size: 0.85rem;
+        gap: 8px;
+    }
+    
+    .color-circle {
+        width: 20px;
+        height: 20px;
     }
     
     .canvas-container {
-        max-height: 60vh;
+        flex: 1;
+        max-height: none;
+        overflow: auto;
+        border: none;
+        margin: 0;
+        padding-bottom: 70px; /* Space for bottom bar */
+    }
+    
+    .info {
+        padding: 10px 15px;
+        font-size: 0.85rem;
+    }
+    
+    .info p {
+        font-size: 0.8rem;
+        margin: 3px 0;
+    }
+    
+    /* Bottom control bar for mobile */
+    .control-bar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: #2c3e50;
+        padding: 12px 15px;
+        box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.2);
+        z-index: 1000;
+        gap: 10px;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+    }
+    
+    .control-bar .reset-btn {
+        padding: 10px 15px;
+        font-size: 0.85rem;
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+    
+    .control-bar .admin-controls {
+        display: flex;
+        gap: 8px;
+        flex: 1;
+        min-width: 0;
+    }
+    
+    .control-bar #adminPinInput {
+        padding: 10px;
+        font-size: 0.85rem;
+        min-width: 100px;
+        flex: 1;
+        max-width: 150px;
+    }
+    
+    .control-bar .admin-btn,
+    .control-bar .lock-btn {
+        padding: 10px 15px;
+        font-size: 0.85rem;
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+    
+    /* Show short text on mobile */
+    .btn-text-full {
+        display: none;
+    }
+    
+    .btn-text-short {
+        display: inline;
     }
 }
 
