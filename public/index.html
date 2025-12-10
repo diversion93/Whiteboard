@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🖍️ Realtime Multiplayer Whiteboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🖍️ Multiplayer Whiteboard</h1>
+            <div class="controls">
+                <div class="color-indicator">
+                    <span>Your color:</span>
+                    <div id="userColorDisplay" class="color-circle"></div>
+                </div>
+                <button id="resetBtn" class="reset-btn">🗑️ Reset Whiteboard</button>
+            </div>
+            <div class="admin-controls">
+                <input type="password" id="adminPinInput" placeholder="Enter Admin PIN" />
+                <button id="adminAuthBtn" class="admin-btn">Authenticate</button>
+                <button id="lockToggleBtn" class="lock-btn" style="display: none;">Lock Board</button>
+            </div>
+        </header>
+        
+        <div class="canvas-container">
+            <canvas id="whiteboard" width="2000" height="2000"></canvas>
+        </div>
+        
+        <div class="info">
+            <p>Draw with your mouse or finger. Everyone can see your drawings in real-time!</p>
+            <p id="connectionStatus" class="status">Connecting...</p>
+            <p id="lockNotice" class="lock-notice" style="display: none;">🔒 Board is locked by admin</p>
+            <p id="cooldownNotice" class="cooldown-notice" style="display: none;"></p>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>

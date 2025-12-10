@@ -1,0 +1,253 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    padding: 20px;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    background: white;
+    border-radius: 15px;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+}
+
+header {
+    background: #2c3e50;
+    color: white;
+    padding: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 15px;
+}
+
+h1 {
+    font-size: 1.8rem;
+    font-weight: 600;
+}
+
+.controls {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+}
+
+.color-indicator {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.9rem;
+}
+
+.color-circle {
+    width: 25px;
+    height: 25px;
+    border-radius: 50%;
+    border: 2px solid white;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.reset-btn {
+    background: #e74c3c;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 500;
+    transition: all 0.3s ease;
+}
+
+.reset-btn:hover {
+    background: #c0392b;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.reset-btn:active {
+    transform: translateY(0);
+}
+
+.admin-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+#adminPinInput {
+    padding: 10px 15px;
+    border: 2px solid #95a5a6;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    background: white;
+    color: #2c3e50;
+    min-width: 150px;
+}
+
+#adminPinInput:focus {
+    outline: none;
+    border-color: #3498db;
+}
+
+.admin-btn {
+    background: #3498db;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 500;
+    transition: all 0.3s ease;
+}
+
+.admin-btn:hover {
+    background: #2980b9;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.admin-btn:active {
+    transform: translateY(0);
+}
+
+.lock-btn {
+    background: #f39c12;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 500;
+    transition: all 0.3s ease;
+}
+
+.lock-btn:hover {
+    background: #e67e22;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.lock-btn:active {
+    transform: translateY(0);
+}
+
+.lock-notice {
+    background: #fff3cd;
+    color: #856404;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-weight: 600;
+    margin: 10px 0;
+    border: 2px solid #ffc107;
+}
+
+.cooldown-notice {
+    background: #d1ecf1;
+    color: #0c5460;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-weight: 600;
+    margin: 10px 0;
+    border: 2px solid #17a2b8;
+}
+
+.canvas-container {
+    position: relative;
+    overflow: auto;
+    max-height: 70vh;
+    background: #f8f9fa;
+    border: 2px solid #e9ecef;
+}
+
+#whiteboard {
+    display: block;
+    cursor: crosshair;
+    background: white;
+    touch-action: none;
+}
+
+.info {
+    padding: 20px;
+    background: #f8f9fa;
+    text-align: center;
+    color: #6c757d;
+}
+
+.info p {
+    margin: 5px 0;
+    font-size: 0.9rem;
+}
+
+.status {
+    font-weight: 600;
+    padding: 5px 10px;
+    border-radius: 5px;
+    display: inline-block;
+    margin-top: 10px;
+}
+
+.status.connected {
+    background: #d4edda;
+    color: #155724;
+}
+
+.status.disconnected {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.status.connecting {
+    background: #fff3cd;
+    color: #856404;
+}
+
+/* Mobile responsiveness */
+@media (max-width: 768px) {
+    body {
+        padding: 10px;
+    }
+    
+    header {
+        flex-direction: column;
+        text-align: center;
+    }
+    
+    .controls {
+        justify-content: center;
+    }
+    
+    h1 {
+        font-size: 1.5rem;
+    }
+    
+    .canvas-container {
+        max-height: 60vh;
+    }
+}
+
+/* Touch device optimizations */
+@media (hover: none) and (pointer: coarse) {
+    #whiteboard {
+        cursor: none;
+    }
+    
+    .reset-btn {
+        padding: 15px 25px;
+        font-size: 1rem;
+    }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "realtime-whiteboard",
+  "version": "1.0.0",
+  "description": "A lightweight, web-based multiplayer drawing board with mouse and touch support",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2"
+  },
+  "keywords": [
+    "whiteboard",
+    "multiplayer",
+    "drawing",
+    "realtime",
+    "canvas"
+  ],
+  "author": "",
+  "license": "MIT"
+}
