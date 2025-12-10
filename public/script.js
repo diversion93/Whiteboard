@@ -174,6 +174,7 @@ resetBtn.addEventListener('click', () => {
         return;
     }
     if (confirm('Are you sure you want to reset the whiteboard for everyone?')) {
+        console.log(`[resetCanvas] Sending reset request - clientId: ${clientId}`);
         socket.emit('resetCanvas', { clientId });
     }
 });
@@ -187,6 +188,7 @@ adminAuthBtn.addEventListener('click', () => {
             alert('Please enter a valid numeric admin code');
             return;
         }
+        console.log(`[adminAuth] Sending auth request - code: ${code}, clientId: ${clientId}`);
         socket.emit('adminAuth', { code, clientId });
     }
 });
@@ -199,7 +201,7 @@ lockToggleBtn.addEventListener('click', () => {
 
 // Socket event handlers
 socket.on('connect', () => {
-    console.log('Connected to server');
+    console.log(`[connect] Connected to server - clientId: ${clientId}`);
     connectionStatus.textContent = 'Connected';
     connectionStatus.className = 'status connected';
     
@@ -208,7 +210,7 @@ socket.on('connect', () => {
 });
 
 socket.on('disconnect', () => {
-    console.log('Disconnected from server');
+    console.log('[disconnect] Disconnected from server');
     connectionStatus.textContent = 'Disconnected';
     connectionStatus.className = 'status disconnected';
 });
@@ -232,7 +234,7 @@ socket.on('loadDrawing', (drawingData) => {
 
 socket.on('resetCanvas', () => {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    console.log('Canvas reset');
+    console.log('[resetCanvas] Canvas reset received');
 });
 
 // Admin authentication response
@@ -241,8 +243,12 @@ socket.on('adminAuthSuccess', () => {
     adminPinInput.style.display = 'none';
     adminAuthBtn.style.display = 'none';
     lockToggleBtn.style.display = 'inline-block';
+    
+    // Update lock toggle button text based on current state
+    lockToggleBtn.textContent = drawingLocked ? 'Unlock Board' : 'Lock Board';
+    
     alert('Admin authentication successful!');
-    console.log('Admin authenticated');
+    console.log('[adminAuthSuccess] Admin authenticated');
 });
 
 socket.on('adminAuthFailed', (data) => {
@@ -269,6 +275,8 @@ socket.on('adminAuthFailed', (data) => {
 socket.on('lockStateUpdate', (lockState) => {
     drawingLocked = lockState.drawingLocked;
     resetLocked = lockState.resetLocked;
+    
+    console.log(`[lockStateUpdate] Lock state updated - drawingLocked: ${drawingLocked}, resetLocked: ${resetLocked}`);
     
     // Update UI
     if (drawingLocked) {
@@ -300,6 +308,7 @@ socket.on('lockStateUpdate', (lockState) => {
 // Reset cooldown notification
 socket.on('resetCooldown', (data) => {
     const minutes = Math.ceil(data.remainingTime / 60);
+    console.log(`[resetCooldown] Reset on cooldown - ${data.remainingTime}s remaining`);
     cooldownNotice.textContent = `⏰ You can reset the board again in ${minutes} minute(s)`;
     cooldownNotice.style.display = 'block';
     setTimeout(() => {
@@ -309,6 +318,7 @@ socket.on('resetCooldown', (data) => {
 
 // Reset rejected notification
 socket.on('resetRejected', (message) => {
+    console.log(`[resetRejected] Reset rejected - ${message}`);
     alert(message || 'Reset action is currently disabled');
 });
 

@@ -60,7 +60,7 @@ function getRandomColor() {
 }
 
 io.on('connection', (socket) => {
-    console.log('User connected:', socket.id);
+    console.log(`[connection] User connected: ${socket.id}`);
     
     // Initialize client identity for this socket
     clientIdentities.set(socket.id, { clientId: null, color: null, isAdmin: false });
@@ -79,7 +79,7 @@ io.on('connection', (socket) => {
         // Send the user their color
         socket.emit('userColor', color);
         
-        console.log(`Client identified: ${clientId} with color ${color}`);
+        console.log(`[clientIdentity] Client identified: ${clientId} with color ${color} (socket: ${socket.id})`);
     });
     
     // Handle admin authentication with brute-force protection
@@ -87,8 +87,14 @@ io.on('connection', (socket) => {
         const { code, clientId } = data;
         const now = Date.now();
         
+        console.log(`[adminAuth] Received auth attempt - code: ${code}, clientId: ${clientId}`);
+        
+        // Convert code to number and validate
+        const numericCode = Number(code);
+        
         // Validate input
-        if (!clientId || typeof code !== 'number') {
+        if (!clientId || Number.isNaN(numericCode)) {
+            console.log(`[adminAuth] Rejected - Invalid clientId or NaN code`);
             socket.emit('adminAuthFailed', { 
                 message: 'Admin code invalid or temporarily blocked' 
             });
@@ -113,7 +119,7 @@ io.on('connection', (socket) => {
                 message: 'Admin code invalid or temporarily blocked',
                 remainingSeconds // For client-side UI feedback
             });
-            console.log(`Blocked admin attempt from ${clientId}: ${remainingSeconds}s remaining`);
+            console.log(`[adminAuth] Blocked admin attempt from ${clientId}: ${remainingSeconds}s remaining`);
             return;
         }
         
@@ -140,7 +146,7 @@ io.on('connection', (socket) => {
                 message: 'Admin code invalid or temporarily blocked',
                 remainingSeconds
             });
-            console.log(`Rate limit for ${clientId}: ${remainingSeconds}s remaining`);
+            console.log(`[adminAuth] Rate limit for ${clientId}: ${remainingSeconds}s remaining`);
             return;
         }
         
@@ -148,7 +154,7 @@ io.on('connection', (socket) => {
         attemptData.lastTry = now;
         
         // Validate admin code
-        if (code === ADMIN_CODE) {
+        if (numericCode === ADMIN_CODE) {
             // Success - clear failed attempts and grant admin access
             attemptData.failedAttempts = [];
             attemptData.blockedUntil = null;
@@ -159,7 +165,7 @@ io.on('connection', (socket) => {
                 clientData.isAdmin = true;
                 clientIdentities.set(socket.id, clientData);
                 socket.emit('adminAuthSuccess');
-                console.log(`Admin authenticated: ${clientId} (socket: ${socket.id})`);
+                console.log(`[adminAuth] Admin authenticated: ${clientId} (socket: ${socket.id})`);
             }
         } else {
             // Failed attempt - track it
@@ -174,7 +180,7 @@ io.on('connection', (socket) => {
             if (attemptData.failedAttempts.length >= MAX_FAILED_ATTEMPTS) {
                 attemptData.blockedUntil = now + BLOCK_DURATION_MS;
                 const blockMinutes = Math.ceil(BLOCK_DURATION_MS / 60000);
-                console.log(`Client ${clientId} blocked for ${blockMinutes} minutes after ${MAX_FAILED_ATTEMPTS} failed attempts`);
+                console.log(`[adminAuth] Client ${clientId} blocked for ${blockMinutes} minutes after ${MAX_FAILED_ATTEMPTS} failed attempts`);
             }
             
             adminAttempts.set(clientId, attemptData);
@@ -182,7 +188,7 @@ io.on('connection', (socket) => {
             socket.emit('adminAuthFailed', { 
                 message: 'Admin code invalid or temporarily blocked'
             });
-            console.log(`Failed admin auth attempt from: ${clientId} (${attemptData.failedAttempts.length} recent failures)`);
+            console.log(`[adminAuth] Failed admin auth attempt from: ${clientId} (${attemptData.failedAttempts.length} recent failures)`);
         }
     });
     
@@ -190,8 +196,10 @@ io.on('connection', (socket) => {
     socket.on('toggleLock', (lockState) => {
         const clientData = clientIdentities.get(socket.id);
         
+        console.log(`[toggleLock] Lock toggle request - lockState: ${lockState}, socket: ${socket.id}, isAdmin: ${clientData?.isAdmin || false}`);
+        
         if (!clientData || !clientData.isAdmin) {
-            console.log(`Unauthorized lock toggle attempt from: ${socket.id}`);
+            console.log(`[toggleLock] Unauthorized lock toggle attempt from: ${socket.id}`);
             return;
         }
         
@@ -202,7 +210,7 @@ io.on('connection', (socket) => {
         // Broadcast new lock state to all clients
         io.emit('lockStateUpdate', { drawingLocked, resetLocked });
         
-        console.log(`Board lock toggled to: ${lockState} by admin ${socket.id}`);
+        console.log(`[toggleLock] Board lock toggled to: ${lockState} by admin ${socket.id}`);
     });
     
     // Handle drawing events
@@ -211,7 +219,7 @@ io.on('connection', (socket) => {
         
         // Check if drawing is locked for non-admins
         if (drawingLocked && (!clientData || !clientData.isAdmin)) {
-            console.log(`Drawing blocked for non-admin: ${socket.id}`);
+            console.log(`[drawing] Drawing blocked for non-admin: ${socket.id}`);
             return;
         }
         
@@ -225,9 +233,12 @@ io.on('connection', (socket) => {
     // Handle canvas reset with rate limiting
     socket.on('resetCanvas', (data) => {
         const clientData = clientIdentities.get(socket.id);
-        const clientId = data?.clientId || clientData?.clientId;
+        const clientId = data?.clientId || clientData?.clientId || socket.id;
+        
+        console.log(`[resetCanvas] Reset request from clientId: ${clientId}, socket: ${socket.id}, isAdmin: ${clientData?.isAdmin || false}`);
         
         if (!clientId) {
+            console.log(`[resetCanvas] Rejected - Invalid client identity`);
             socket.emit('resetRejected', 'Invalid client identity');
             return;
         }
@@ -235,7 +246,7 @@ io.on('connection', (socket) => {
         // Check if reset is locked for non-admins
         if (resetLocked && (!clientData || !clientData.isAdmin)) {
             socket.emit('resetRejected', 'Reset is locked by admin');
-            console.log(`Reset blocked for non-admin: ${socket.id}`);
+            console.log(`[resetCanvas] Reset blocked for non-admin: ${socket.id}`);
             return;
         }
         
@@ -250,7 +261,7 @@ io.on('connection', (socket) => {
                 if (timeSinceLastReset < RESET_COOLDOWN_MS) {
                     const remainingTime = Math.ceil((RESET_COOLDOWN_MS - timeSinceLastReset) / 1000);
                     socket.emit('resetCooldown', { remainingTime });
-                    console.log(`Reset cooldown active for ${clientId}: ${remainingTime}s remaining`);
+                    console.log(`[resetCanvas] Reset cooldown active for ${clientId}: ${remainingTime}s remaining`);
                     return;
                 }
             }
@@ -262,11 +273,11 @@ io.on('connection', (socket) => {
         // Reset the canvas
         drawingData = [];
         io.emit('resetCanvas');
-        console.log(`Canvas reset by ${clientData?.isAdmin ? 'admin' : 'user'}: ${clientId}`);
+        console.log(`[resetCanvas] Canvas reset by ${clientData?.isAdmin ? 'admin' : 'user'}: ${clientId}`);
     });
     
     socket.on('disconnect', () => {
-        console.log('User disconnected:', socket.id);
+        console.log(`[disconnect] User disconnected: ${socket.id}`);
         clientIdentities.delete(socket.id);
     });
 });
