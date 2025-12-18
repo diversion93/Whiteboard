@@ -59,22 +59,34 @@ const UPDATE_RATE = 33; // ~30fps (1000ms / 30fps = 33ms)
 // Throttle drawing updates
 let lastDrawTime = 0;
 
-// Client-side rate limiting for immediate throttling (BALANCED LIMITS)
+// Client-side rate limiting for immediate throttling (VERY RELAXED LIMITS)
 const CLIENT_RATE_LIMIT_WINDOW = 1000; // 1 second window
-const CLIENT_RATE_LIMIT_MAX_EVENTS = 25; // Max 25 events per second
-const CLIENT_RATE_LIMIT_THROTTLE_THRESHOLD = 20; // Start throttling at 20/sec
+const CLIENT_RATE_LIMIT_MAX_EVENTS = 50; // Max 50 events per second (increased from 35)
+const CLIENT_RATE_LIMIT_THROTTLE_THRESHOLD = 40; // Start throttling at 40/sec (increased from 28)
 
-// Initial burst protection (allows a few quick strokes at the start)
-const CLIENT_INITIAL_BURST_WINDOW = 500; // 500ms initial window - allows initial drawing freedom
-const CLIENT_INITIAL_BURST_MAX = 15; // Max 15 events in first 500ms - enough for a few quick strokes
-const CLIENT_INITIAL_BURST_WARN = 12; // Warn at 12 events in first 500ms
+// Initial burst protection (allows more quick short strokes at the start)
+const CLIENT_INITIAL_BURST_WINDOW = 900; // 900ms initial window - allows more quick short strokes
+const CLIENT_INITIAL_BURST_MAX = 25; // Max 25 events in first 900ms (increased from 18)
+const CLIENT_INITIAL_BURST_WARN = 20; // Warn at 20 events in first 900ms (increased from 14)
 
-// Escalating violation tracking
+// Long stroke prevention (TIME-AWARE - prevents long strokes, allows slightly longer for slow drawing)
+const MAX_STROKE_LENGTH_FAST = 1800; // Maximum for fast drawing (< 1.5 seconds)
+const MAX_STROKE_LENGTH_MEDIUM = 3000; // Maximum for medium speed (1.5-3 seconds)
+const MAX_STROKE_LENGTH_SLOW = 4500; // Maximum for slow drawing (> 3 seconds)
+const STROKE_LENGTH_WARNING_EARLY = 1800; // Early warning for stroke length
+const STROKE_LENGTH_WARNING = 2200; // Final warning before blocking
+let currentStrokeLength = 0; // Track current stroke distance
+let currentStrokeStartTime = 0; // Track when current stroke started
+let strokeLengthWarningShown = false;
+let strokeLengthEarlyWarningShown = false;
+
+// Escalating violation tracking with more warnings
 const VIOLATION_MEMORY_DURATION = 30000; // Remember violations for 30 seconds
 let violationHistory = [];
 let isDrawingPaused = false;
 let drawingPauseTimeout = null;
 let hasReceivedFirstWarning = false; // Track if user has received their first warning
+let hasReceivedSecondWarning = false; // Track second warning
 
 let clientDrawEvents = [];
 let isClientThrottled = false;
@@ -135,29 +147,71 @@ function recordViolation() {
     // First violation is just a gentle warning - no pause
     if (recentViolations === 1 && !hasReceivedFirstWarning) {
         hasReceivedFirstWarning = true;
-        showGentleWarning();
+        showGentleWarning('first');
         return;
     }
     
-    // Escalating consequences for subsequent violations
-    if (recentViolations >= 5) {
-        // 5+ violations: 30 second pause
+    // Second violation gets a stronger warning - still no pause
+    if (recentViolations === 2 && !hasReceivedSecondWarning) {
+        hasReceivedSecondWarning = true;
+        showGentleWarning('second');
+        return;
+    }
+    
+    // Third violation gets a final warning - still no pause
+    if (recentViolations === 3) {
+        showGentleWarning('final');
+        return;
+    }
+    
+    // Escalating consequences for repeated violations after warnings
+    if (recentViolations >= 7) {
+        // 7+ violations: 30 second pause
         pauseDrawing(30, recentViolations);
-    } else if (recentViolations >= 3) {
-        // 3-4 violations: 15 second pause
+    } else if (recentViolations >= 5) {
+        // 5-6 violations: 15 second pause
         pauseDrawing(15, recentViolations);
-    } else if (recentViolations >= 2) {
-        // 2 violations: 5 second pause
+    } else if (recentViolations >= 4) {
+        // 4 violations: 5 second pause
         pauseDrawing(5, recentViolations);
     }
 }
 
-// Show a gentle first-time warning
-function showGentleWarning() {
+// Show a gentle warning with escalating severity
+function showGentleWarning(level = 'first') {
     // Remove any existing warning
     let existingWarning = document.getElementById('gentleWarning');
     if (existingWarning) {
         existingWarning.remove();
+    }
+    
+    // Determine warning appearance based on level
+    let backgroundColor, emoji, mainText, subText;
+    
+    switch (level) {
+        case 'first':
+            backgroundColor = 'rgba(52, 152, 219, 0.95)'; // Blue
+            emoji = 'ℹ️';
+            mainText = 'Drawing quickly! Try to pace yourself';
+            subText = 'Continued rapid drawing will trigger more warnings';
+            break;
+        case 'second':
+            backgroundColor = 'rgba(255, 152, 0, 0.95)'; // Orange
+            emoji = '⚠️';
+            mainText = 'Still drawing too fast!';
+            subText = 'Please slow down or you may be paused';
+            break;
+        case 'final':
+            backgroundColor = 'rgba(255, 87, 34, 0.95)'; // Dark orange
+            emoji = '🚨';
+            mainText = 'Final warning! Slow down now';
+            subText = 'Next violation will pause your drawing';
+            break;
+        default:
+            backgroundColor = 'rgba(52, 152, 219, 0.95)';
+            emoji = 'ℹ️';
+            mainText = 'Drawing quickly!';
+            subText = 'Try to pace yourself';
     }
     
     const warningDiv = document.createElement('div');
@@ -167,7 +221,7 @@ function showGentleWarning() {
         top: 20px;
         left: 50%;
         transform: translateX(-50%);
-        background: rgba(52, 152, 219, 0.95);
+        background: ${backgroundColor};
         color: white;
         padding: 15px 25px;
         border-radius: 8px;
@@ -181,11 +235,11 @@ function showGentleWarning() {
     
     warningDiv.innerHTML = `
         <div style="display: flex; align-items: center; gap: 10px;">
-            <span style="font-size: 20px;">ℹ️</span>
+            <span style="font-size: 20px;">${emoji}</span>
             <div>
-                <div>Drawing quickly! Try to pace yourself</div>
+                <div>${mainText}</div>
                 <div style="font-size: 12px; opacity: 0.9; margin-top: 4px;">
-                    Continued rapid drawing will trigger pauses
+                    ${subText}
                 </div>
             </div>
         </div>
@@ -193,7 +247,8 @@ function showGentleWarning() {
     
     document.body.appendChild(warningDiv);
     
-    // Auto-remove after 3 seconds
+    // Auto-remove after 3-4 seconds (longer for more severe warnings)
+    const duration = level === 'final' ? 4000 : 3000;
     setTimeout(() => {
         warningDiv.style.transition = 'opacity 0.3s, transform 0.3s';
         warningDiv.style.opacity = '0';
@@ -203,7 +258,7 @@ function showGentleWarning() {
                 warningDiv.remove();
             }
         }, 300);
-    }, 3000);
+    }, duration);
 }
 
 // Pause drawing for a specified duration
@@ -487,6 +542,12 @@ function startDrawing(e) {
     
     isDrawing = true;
     
+    // Reset stroke length tracking
+    currentStrokeLength = 0;
+    currentStrokeStartTime = Date.now(); // Track when this stroke started
+    strokeLengthWarningShown = false;
+    strokeLengthEarlyWarningShown = false;
+    
     // Initialize drawing session start time for burst protection
     if (!drawingSessionStartTime) {
         drawingSessionStartTime = Date.now();
@@ -496,6 +557,110 @@ function startDrawing(e) {
     const pos = getEventPos(e);
     lastX = pos.x;
     lastY = pos.y;
+}
+
+// Show stroke length warning with progressive levels (TIME-AWARE)
+function showStrokeLengthWarning(level = 'early', strokeSpeed = 'unknown', strokeDuration = 0) {
+    // Remove any existing warning
+    let existingWarning = document.getElementById('strokeLengthWarning');
+    if (existingWarning) {
+        existingWarning.remove();
+    }
+    
+    // Determine warning appearance based on level
+    let backgroundColor, emoji, message, subMessage, autoRemove;
+    
+    switch (level) {
+        case 'early':
+            backgroundColor = 'rgba(100, 181, 246, 0.95)'; // Light blue
+            emoji = '💡';
+            message = 'Stroke getting long';
+            if (strokeSpeed === 'fast') {
+                subMessage = 'Draw more slowly for longer strokes';
+            } else {
+                subMessage = 'Consider shorter strokes or release soon';
+            }
+            autoRemove = true;
+            break;
+        case 'final':
+            backgroundColor = 'rgba(255, 152, 0, 0.95)'; // Orange
+            emoji = '⚠️';
+            message = 'Long stroke! Release soon';
+            if (strokeSpeed === 'fast') {
+                subMessage = 'Drawing too fast - slow down!';
+            } else if (strokeSpeed === 'medium') {
+                subMessage = 'Approaching limit - release soon';
+            } else {
+                subMessage = 'Approaching maximum length';
+            }
+            autoRemove = true;
+            break;
+        case 'maxed':
+            backgroundColor = 'rgba(220, 20, 60, 0.95)'; // Red
+            emoji = '🛑';
+            message = 'Stroke blocked!';
+            if (strokeSpeed === 'fast') {
+                subMessage = 'Draw slower or use shorter strokes';
+            } else {
+                subMessage = 'Maximum length reached - release now';
+            }
+            autoRemove = false; // Keep visible until user releases
+            break;
+        default:
+            backgroundColor = 'rgba(255, 152, 0, 0.95)';
+            emoji = '⚠️';
+            message = 'Long stroke';
+            subMessage = 'Release soon';
+            autoRemove = true;
+    }
+    
+    const warningDiv = document.createElement('div');
+    warningDiv.id = 'strokeLengthWarning';
+    warningDiv.style.cssText = `
+        position: fixed;
+        top: 70px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: ${backgroundColor};
+        color: white;
+        padding: 12px 20px;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: bold;
+        z-index: 9999;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+        text-align: center;
+        animation: slideDown 0.3s ease-out;
+    `;
+    
+    warningDiv.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 18px;">${emoji}</span>
+            <div>
+                <div style="font-size: 13px;">${message}</div>
+                <div style="font-size: 11px; opacity: 0.85; margin-top: 3px;">
+                    ${subMessage}
+                </div>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(warningDiv);
+    
+    // Auto-remove after 3 seconds for non-maxed warnings
+    if (autoRemove) {
+        setTimeout(() => {
+            if (warningDiv.parentNode) {
+                warningDiv.style.transition = 'opacity 0.3s';
+                warningDiv.style.opacity = '0';
+                setTimeout(() => {
+                    if (warningDiv.parentNode) {
+                        warningDiv.remove();
+                    }
+                }, 300);
+            }
+        }, 3000);
+    }
 }
 
 // Draw and emit data
@@ -522,6 +687,62 @@ function draw(e) {
     
     const pos = getEventPos(e);
     
+    // Calculate distance for this segment
+    const dx = pos.x - lastX;
+    const dy = pos.y - lastY;
+    const segmentLength = Math.sqrt(dx * dx + dy * dy);
+    
+    // Check stroke length limits for non-admins (TIME-AWARE - allows longer strokes if drawn slowly)
+    if (!isAdmin) {
+        currentStrokeLength += segmentLength;
+        
+        // Calculate stroke duration and determine appropriate max length
+        const strokeDuration = (now - currentStrokeStartTime) / 1000; // in seconds
+        let maxStrokeLength;
+        let strokeSpeed;
+        
+        if (strokeDuration < 1.5) {
+            maxStrokeLength = MAX_STROKE_LENGTH_FAST;
+            strokeSpeed = 'fast';
+        } else if (strokeDuration < 3.0) {
+            maxStrokeLength = MAX_STROKE_LENGTH_MEDIUM;
+            strokeSpeed = 'medium';
+        } else {
+            maxStrokeLength = MAX_STROKE_LENGTH_SLOW;
+            strokeSpeed = 'slow';
+        }
+        
+        // Hard limit - block if exceeded (based on stroke speed)
+        if (currentStrokeLength > maxStrokeLength) {
+            if (!strokeLengthWarningShown) {
+                showStrokeLengthWarning('maxed', strokeSpeed, strokeDuration);
+                recordViolation();
+                strokeLengthWarningShown = true;
+            }
+            console.log(`[Stroke Length] BLOCKING - ${Math.round(currentStrokeLength)}px exceeds ${maxStrokeLength}px (${strokeSpeed} stroke, ${strokeDuration.toFixed(1)}s)`);
+            // Force stop drawing
+            isDrawing = false;
+            return;
+        }
+        
+        // Calculate warning thresholds (80% and 90% of max)
+        const earlyWarningThreshold = maxStrokeLength * 0.72;
+        const finalWarningThreshold = maxStrokeLength * 0.88;
+        
+        // Final warning threshold (close to limit)
+        if (currentStrokeLength > finalWarningThreshold && !strokeLengthWarningShown) {
+            showStrokeLengthWarning('final', strokeSpeed, strokeDuration);
+            strokeLengthWarningShown = true;
+            console.log(`[Stroke Length] Final warning - ${Math.round(currentStrokeLength)}px/${maxStrokeLength}px (${strokeSpeed}, ${strokeDuration.toFixed(1)}s)`);
+        }
+        // Early warning threshold
+        else if (currentStrokeLength > earlyWarningThreshold && !strokeLengthEarlyWarningShown) {
+            showStrokeLengthWarning('early', strokeSpeed, strokeDuration);
+            strokeLengthEarlyWarningShown = true;
+            console.log(`[Stroke Length] Early warning - ${Math.round(currentStrokeLength)}px/${maxStrokeLength}px (${strokeSpeed}, ${strokeDuration.toFixed(1)}s)`);
+        }
+    }
+    
     // Draw locally
     drawLine(lastX, lastY, pos.x, pos.y, userColor);
     
@@ -546,6 +767,18 @@ function stopDrawing(e) {
     if (!isDrawing) return;
     e.preventDefault();
     isDrawing = false;
+    
+    // Remove stroke length warning if present
+    let existingWarning = document.getElementById('strokeLengthWarning');
+    if (existingWarning) {
+        existingWarning.style.transition = 'opacity 0.3s';
+        existingWarning.style.opacity = '0';
+        setTimeout(() => {
+            if (existingWarning.parentNode) {
+                existingWarning.remove();
+            }
+        }, 300);
+    }
     
     // Reset drawing session timer after a short delay
     // This allows a new session to start with fresh burst protection
