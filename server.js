@@ -16,37 +16,32 @@ app.use(express.static(path.join(__dirname, 'public')));
 let drawingData = [];
 
 // Admin configuration
-const ADMIN_CODE = 19931993; // Fixed numeric admin code
-const RESET_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes in milliseconds
+const ADMIN_CODE = 19931993;
+const RESET_COOLDOWN_MS = 5 * 60 * 1000;
 
-// Brute-force protection configuration
-const MIN_ATTEMPT_INTERVAL_MS = 5 * 1000; // 5 seconds between attempts
-const MAX_FAILED_ATTEMPTS = 3; // Max failed attempts before block
-const FAILED_ATTEMPTS_WINDOW_MS = 10 * 60 * 1000; // 10-minute window for tracking failures
-const BLOCK_DURATION_MS = 10 * 60 * 1000; // 10-minute block after max failures
+const RATE_LIMIT_MAX_EVENTS = 60;
+const RATE_LIMIT_WINDOW_MS = 1000;
+const RATE_LIMIT_DISCONNECT_THRESHOLD = 3;
 
-// Backoff delays after each failed attempt
+const MIN_ATTEMPT_INTERVAL_MS = 5 * 1000;
+const MAX_FAILED_ATTEMPTS = 3;
+const FAILED_ATTEMPTS_WINDOW_MS = 10 * 60 * 1000;
+const BLOCK_DURATION_MS = 10 * 60 * 1000;
+
 const BACKOFF_DELAYS_MS = [
-    5 * 1000,      // 1st failed attempt: 5 seconds
-    30 * 1000,     // 2nd failed attempt: 30 seconds
-    5 * 60 * 1000  // 3rd failed attempt: 5 minutes
+    5 * 1000,
+    30 * 1000,
+    5 * 60 * 1000
 ];
 
-// Track admin authentication attempts per client
-const adminAttempts = new Map(); 
-// Structure: clientId -> { 
-//   lastTry: timestamp, 
-//   failedAttempts: [timestamps], 
-//   blockedUntil: timestamp | null 
-// }
+const adminAttempts = new Map();
 
-// Global lock state
 let drawingLocked = false;
 let resetLocked = false;
 
-// Track client identities and their last reset times
-const clientIdentities = new Map(); // socketId -> { clientId, color, isAdmin }
-const lastClearByClient = new Map(); // clientId -> timestamp
+const clientIdentities = new Map();
+const sessionData = new Map();
+const lastClearByClient = new Map();
 
 // Generate random colors for users
 const colors = [
@@ -62,14 +57,19 @@ function getRandomColor() {
 io.on('connection', (socket) => {
     console.log(`[connection] User connected: ${socket.id}`);
     
-    // Initialize client identity for this socket
+    const now = Date.now();
     clientIdentities.set(socket.id, { clientId: null, color: null, isAdmin: false });
+    sessionData.set(socket.id, {
+        sessionId: socket.id,
+        connectedAt: now,
+        lastActivity: now,
+        drawingEventTimestamps: [],
+        rateLimitViolations: 0
+    });
     
-    // Send existing drawing data to new user
     socket.emit('loadDrawing', drawingData);
-    
-    // Send current lock state to new user
     socket.emit('lockStateUpdate', { drawingLocked, resetLocked });
+    socket.emit('drawing-lock-state', { locked: drawingLocked });
     
     // Handle client identity
     socket.on('clientIdentity', (data) => {
@@ -82,8 +82,7 @@ io.on('connection', (socket) => {
         console.log(`[clientIdentity] Client identified: ${clientId} with color ${color} (socket: ${socket.id})`);
     });
     
-    // Handle admin authentication with brute-force protection
-    socket.on('adminAuth', (data) => {
+    socket.on('admin-auth', (data) => {
         const { code, clientId } = data;
         const now = Date.now();
         
@@ -165,6 +164,7 @@ io.on('connection', (socket) => {
                 clientData.isAdmin = true;
                 clientIdentities.set(socket.id, clientData);
                 socket.emit('adminAuthSuccess');
+                socket.emit('admin-auth-success');
                 console.log(`[adminAuth] Admin authenticated: ${clientId} (socket: ${socket.id})`);
             }
         } else {
@@ -192,42 +192,140 @@ io.on('connection', (socket) => {
         }
     });
     
-    // Handle lock toggle (admin only)
+    socket.on('admin-set-drawing-lock', (data) => {
+        const clientData = clientIdentities.get(socket.id);
+        
+        if (!clientData || !clientData.isAdmin) {
+            console.log(`[admin-set-drawing-lock] Unauthorized attempt from: ${socket.id}`);
+            return;
+        }
+        
+        const locked = data.locked;
+        drawingLocked = locked;
+        resetLocked = locked;
+        
+        io.emit('lockStateUpdate', { drawingLocked, resetLocked });
+        io.emit('drawing-lock-state', { locked: drawingLocked });
+        
+        console.log(`[admin-set-drawing-lock] Drawing lock set to: ${locked} by admin ${socket.id}`);
+    });
+    
+    socket.on('admin-list-clients', () => {
+        const clientData = clientIdentities.get(socket.id);
+        
+        if (!clientData || !clientData.isAdmin) {
+            console.log(`[admin-list-clients] Unauthorized attempt from: ${socket.id}`);
+            return;
+        }
+        
+        const clients = [];
+        for (const [socketId, session] of sessionData.entries()) {
+            const identity = clientIdentities.get(socketId);
+            clients.push({
+                sessionId: session.sessionId,
+                socketId: socketId,
+                connectedAt: session.connectedAt,
+                isAdmin: identity ? identity.isAdmin : false,
+                rateLimited: session.rateLimitViolations > 0
+            });
+        }
+        
+        socket.emit('admin-clients', clients);
+        console.log(`[admin-list-clients] Sent client list to admin ${socket.id}`);
+    });
+    
+    socket.on('admin-kick-client', (data) => {
+        const clientData = clientIdentities.get(socket.id);
+        
+        if (!clientData || !clientData.isAdmin) {
+            console.log(`[admin-kick-client] Unauthorized attempt from: ${socket.id}`);
+            socket.emit('admin-kick-result', { success: false, message: 'Unauthorized' });
+            return;
+        }
+        
+        const targetSocketId = data.socketId || data.sessionId;
+        
+        if (!targetSocketId) {
+            socket.emit('admin-kick-result', { success: false, message: 'No socketId provided' });
+            return;
+        }
+        
+        const targetSocket = io.sockets.sockets.get(targetSocketId);
+        if (targetSocket) {
+            targetSocket.disconnect(true);
+            socket.emit('admin-kick-result', { success: true, socketId: targetSocketId });
+            console.log(`[admin-kick-client] Admin ${socket.id} kicked client ${targetSocketId}`);
+        } else {
+            socket.emit('admin-kick-result', { success: false, message: 'Client not found' });
+        }
+    });
+    
     socket.on('toggleLock', (lockState) => {
         const clientData = clientIdentities.get(socket.id);
         
-        console.log(`[toggleLock] Lock toggle request - lockState: ${lockState}, socket: ${socket.id}, isAdmin: ${clientData?.isAdmin || false}`);
-        
         if (!clientData || !clientData.isAdmin) {
-            console.log(`[toggleLock] Unauthorized lock toggle attempt from: ${socket.id}`);
             return;
         }
         
-        // Update lock states
         drawingLocked = lockState;
         resetLocked = lockState;
         
-        // Broadcast new lock state to all clients
         io.emit('lockStateUpdate', { drawingLocked, resetLocked });
-        
-        console.log(`[toggleLock] Board lock toggled to: ${lockState} by admin ${socket.id}`);
+        io.emit('drawing-lock-state', { locked: drawingLocked });
     });
     
-    // Handle drawing events
     socket.on('drawing', (data) => {
         const clientData = clientIdentities.get(socket.id);
+        const session = sessionData.get(socket.id);
         
-        // Check if drawing is locked for non-admins
         if (drawingLocked && (!clientData || !clientData.isAdmin)) {
-            console.log(`[drawing] Drawing blocked for non-admin: ${socket.id}`);
             return;
         }
         
-        // Add drawing data to memory
-        drawingData.push(data);
+        if (!session) {
+            return;
+        }
         
-        // Broadcast to all other clients
+        const now = Date.now();
+        session.lastActivity = now;
+        
+        if (!clientData || !clientData.isAdmin) {
+            session.drawingEventTimestamps.push(now);
+            
+            session.drawingEventTimestamps = session.drawingEventTimestamps.filter(
+                timestamp => now - timestamp < RATE_LIMIT_WINDOW_MS
+            );
+            
+            if (session.drawingEventTimestamps.length > RATE_LIMIT_MAX_EVENTS) {
+                session.rateLimitViolations++;
+                
+                if (session.rateLimitViolations >= RATE_LIMIT_DISCONNECT_THRESHOLD) {
+                    console.log(`[drawing] Rate limit exceeded, disconnecting: ${socket.id}`);
+                    socket.disconnect(true);
+                    return;
+                }
+                
+                console.log(`[drawing] Rate limit exceeded for: ${socket.id}`);
+                return;
+            } else {
+                session.rateLimitViolations = 0;
+            }
+        }
+        
+        drawingData.push(data);
         socket.broadcast.emit('drawing', data);
+    });
+    
+    socket.on('draw-start', (data) => {
+        handleDrawingEvent(socket, data, 'draw-start');
+    });
+    
+    socket.on('draw-move', (data) => {
+        handleDrawingEvent(socket, data, 'draw-move');
+    });
+    
+    socket.on('draw-end', (data) => {
+        handleDrawingEvent(socket, data, 'draw-end');
     });
     
     // Handle canvas reset with rate limiting
@@ -279,8 +377,50 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         console.log(`[disconnect] User disconnected: ${socket.id}`);
         clientIdentities.delete(socket.id);
+        sessionData.delete(socket.id);
     });
 });
+
+function handleDrawingEvent(socket, data, eventName) {
+    const clientData = clientIdentities.get(socket.id);
+    const session = sessionData.get(socket.id);
+    
+    if (drawingLocked && (!clientData || !clientData.isAdmin)) {
+        return;
+    }
+    
+    if (!session) {
+        return;
+    }
+    
+    const now = Date.now();
+    session.lastActivity = now;
+    
+    if (!clientData || !clientData.isAdmin) {
+        session.drawingEventTimestamps.push(now);
+        
+        session.drawingEventTimestamps = session.drawingEventTimestamps.filter(
+            timestamp => now - timestamp < RATE_LIMIT_WINDOW_MS
+        );
+        
+        if (session.drawingEventTimestamps.length > RATE_LIMIT_MAX_EVENTS) {
+            session.rateLimitViolations++;
+            
+            if (session.rateLimitViolations >= RATE_LIMIT_DISCONNECT_THRESHOLD) {
+                console.log(`[${eventName}] Rate limit exceeded, disconnecting: ${socket.id}`);
+                socket.disconnect(true);
+                return;
+            }
+            
+            console.log(`[${eventName}] Rate limit exceeded for: ${socket.id}`);
+            return;
+        } else {
+            session.rateLimitViolations = 0;
+        }
+    }
+    
+    socket.broadcast.emit(eventName, data);
+}
 
 server.listen(PORT, () => {
     console.log(`🖍️  Whiteboard server running on port ${PORT}`);
