@@ -19,9 +19,21 @@ let drawingData = [];
 const ADMIN_CODE = 19931993;
 const RESET_COOLDOWN_MS = 5 * 60 * 1000;
 
-const RATE_LIMIT_MAX_EVENTS = 60;
+// Progressive rate limiting stages
+const RATE_LIMIT_MAX_EVENTS_PER_SECOND = 25;  // Normal drawing limit
+const RATE_LIMIT_MAX_EVENTS_PER_10_SECONDS = 100;  // 10 second window limit
 const RATE_LIMIT_WINDOW_MS = 1000;
-const RATE_LIMIT_DISCONNECT_THRESHOLD = 3;
+const RATE_LIMIT_WINDOW_10S_MS = 10000;
+
+// Progressive thresholds (events per second)
+const RATE_LIMIT_WARNING_THRESHOLD = 35;   // Start warning at 45/sec
+const RATE_LIMIT_THROTTLE_THRESHOLD = 45;  // Throttle at 55/sec
+const RATE_LIMIT_PAUSE_THRESHOLD = 60;     // Pause at 70/sec
+
+// Violation tracking for disconnection
+const RATE_LIMIT_MAX_VIOLATIONS = 5;  // Need 5 serious violations before disconnect
+const RATE_LIMIT_VIOLATION_WINDOW_MS = 10000;  // 10 second window (reduced from 30s)
+const RATE_LIMIT_VIOLATION_DECAY_MS = 3000;  // Violations decay after 3 seconds of good behavior
 
 const MIN_ATTEMPT_INTERVAL_MS = 5 * 1000;
 const MAX_FAILED_ATTEMPTS = 3;
@@ -64,7 +76,11 @@ io.on('connection', (socket) => {
         connectedAt: now,
         lastActivity: now,
         drawingEventTimestamps: [],
-        rateLimitViolations: 0
+        drawingEventTimestamps10s: [],
+        rateLimitViolations: 0,
+        violationTimestamps: [],
+        isPaused: false,
+        pausedUntil: 0
     });
     
     socket.emit('loadDrawing', drawingData);
@@ -289,31 +305,123 @@ io.on('connection', (socket) => {
         const now = Date.now();
         session.lastActivity = now;
         
-        if (!clientData || !clientData.isAdmin) {
-            session.drawingEventTimestamps.push(now);
-            
-            session.drawingEventTimestamps = session.drawingEventTimestamps.filter(
-                timestamp => now - timestamp < RATE_LIMIT_WINDOW_MS
-            );
-            
-            if (session.drawingEventTimestamps.length > RATE_LIMIT_MAX_EVENTS) {
-                session.rateLimitViolations++;
-                
-                if (session.rateLimitViolations >= RATE_LIMIT_DISCONNECT_THRESHOLD) {
-                    console.log(`[drawing] Rate limit exceeded, disconnecting: ${socket.id}`);
-                    socket.disconnect(true);
-                    return;
-                }
-                
-                console.log(`[drawing] Rate limit exceeded for: ${socket.id}`);
-                return;
-            } else {
-                session.rateLimitViolations = 0;
-            }
+        // Admin users bypass all rate limiting
+        if (clientData && clientData.isAdmin) {
+            drawingData.push(data);
+            socket.broadcast.emit('drawing', data);
+            return;
         }
         
-        drawingData.push(data);
-        socket.broadcast.emit('drawing', data);
+        // Check if user is currently paused
+        if (session.isPaused && now < session.pausedUntil) {
+            const remainingMs = session.pausedUntil - now;
+            console.log(`[drawing] User ${socket.id} is paused for ${Math.ceil(remainingMs / 1000)}s more`);
+            return;
+        } else if (session.isPaused && now >= session.pausedUntil) {
+            // Unpause user
+            session.isPaused = false;
+            session.pausedUntil = 0;
+            console.log(`[drawing] User ${socket.id} unpause period expired, drawing allowed again`);
+        }
+        
+        // Track drawing events
+        session.drawingEventTimestamps.push(now);
+        session.drawingEventTimestamps10s.push(now);
+        
+        // Clean up old timestamps
+        session.drawingEventTimestamps = session.drawingEventTimestamps.filter(
+            timestamp => now - timestamp < RATE_LIMIT_WINDOW_MS
+        );
+        
+        session.drawingEventTimestamps10s = session.drawingEventTimestamps10s.filter(
+            timestamp => now - timestamp < RATE_LIMIT_WINDOW_10S_MS
+        );
+        
+        const eventsPerSecond = session.drawingEventTimestamps.length;
+        const eventsPer10Seconds = session.drawingEventTimestamps10s.length;
+        
+        // Clean up old violations (fast decay)
+        session.violationTimestamps = session.violationTimestamps.filter(
+            timestamp => now - timestamp < RATE_LIMIT_VIOLATION_WINDOW_MS
+        );
+        
+        // Stage 1: Normal operation
+        if (eventsPerSecond <= RATE_LIMIT_MAX_EVENTS_PER_SECOND && 
+            eventsPer10Seconds <= RATE_LIMIT_MAX_EVENTS_PER_10_SECONDS) {
+            // Good behavior - allow drawing
+            drawingData.push(data);
+            socket.broadcast.emit('drawing', data);
+            return;
+        }
+        
+        // Stage 2: Slightly over limit (35-45/sec) - Warning only
+        if (eventsPerSecond <= RATE_LIMIT_WARNING_THRESHOLD) {
+            // Still allow drawing, just log warning
+            console.log(`[drawing] ⚠️  Approaching limit for ${socket.id} - ${eventsPerSecond}/sec`);
+            drawingData.push(data);
+            socket.broadcast.emit('drawing', data);
+            return;
+        }
+        
+        // Stage 3: Moderate excess (45-55/sec) - Throttle
+        if (eventsPerSecond <= RATE_LIMIT_THROTTLE_THRESHOLD) {
+            // Allow every other event through
+            const shouldAllow = eventsPerSecond % 2 === 0;
+            if (shouldAllow) {
+                console.log(`[drawing] 🐌 Throttling ${socket.id} - ${eventsPerSecond}/sec`);
+                drawingData.push(data);
+                socket.broadcast.emit('drawing', data);
+            }
+            return;
+        }
+        
+        // Stage 4: High excess (55-70/sec) - Start tracking violations, temp pause
+        if (eventsPerSecond <= RATE_LIMIT_PAUSE_THRESHOLD) {
+            session.violationTimestamps.push(now);
+            const violationCount = session.violationTimestamps.length;
+            
+            if (violationCount >= 2) {
+                // Pause after 2 violations
+                session.isPaused = true;
+                session.pausedUntil = now + 3000; // 3 second pause
+                console.log(`[drawing] ⏸️  Pausing ${socket.id} for 3s - violations: ${violationCount}/${RATE_LIMIT_MAX_VIOLATIONS}`);
+                socket.emit('rateLimitWarning', {
+                    message: 'Please slow down! Paused for 3 seconds.',
+                    violations: violationCount,
+                    maxViolations: RATE_LIMIT_MAX_VIOLATIONS,
+                    pauseDuration: 3
+                });
+            } else {
+                console.log(`[drawing] ⚠️  High rate for ${socket.id} - ${eventsPerSecond}/sec (violation ${violationCount}/${RATE_LIMIT_MAX_VIOLATIONS})`);
+            }
+            return;
+        }
+        
+        // Stage 5: Extreme excess (>70/sec) - Serious violation
+        session.violationTimestamps.push(now);
+        const violationCount = session.violationTimestamps.length;
+        
+        if (violationCount >= RATE_LIMIT_MAX_VIOLATIONS) {
+            // Disconnect after max violations
+            console.log(`[drawing] 🚫 Disconnecting ${socket.id} - ${violationCount} serious violations in 10s window`);
+            socket.emit('rateLimitDisconnect', {
+                message: 'Disconnected: Too many rate limit violations',
+                violations: violationCount
+            });
+            socket.disconnect(true);
+            return;
+        }
+        
+        // Long pause for extreme rate
+        session.isPaused = true;
+        session.pausedUntil = now + 5000; // 5 second pause
+        console.log(`[drawing] ⏸️  Pausing ${socket.id} for 5s (extreme rate: ${eventsPerSecond}/sec) - violations: ${violationCount}/${RATE_LIMIT_MAX_VIOLATIONS}`);
+        socket.emit('rateLimitWarning', {
+            message: 'Excessive drawing speed! Paused for 5 seconds.',
+            violations: violationCount,
+            maxViolations: RATE_LIMIT_MAX_VIOLATIONS,
+            pauseDuration: 5
+        });
     });
     
     socket.on('draw-start', (data) => {
@@ -396,30 +504,119 @@ function handleDrawingEvent(socket, data, eventName) {
     const now = Date.now();
     session.lastActivity = now;
     
-    if (!clientData || !clientData.isAdmin) {
-        session.drawingEventTimestamps.push(now);
-        
-        session.drawingEventTimestamps = session.drawingEventTimestamps.filter(
-            timestamp => now - timestamp < RATE_LIMIT_WINDOW_MS
-        );
-        
-        if (session.drawingEventTimestamps.length > RATE_LIMIT_MAX_EVENTS) {
-            session.rateLimitViolations++;
-            
-            if (session.rateLimitViolations >= RATE_LIMIT_DISCONNECT_THRESHOLD) {
-                console.log(`[${eventName}] Rate limit exceeded, disconnecting: ${socket.id}`);
-                socket.disconnect(true);
-                return;
-            }
-            
-            console.log(`[${eventName}] Rate limit exceeded for: ${socket.id}`);
-            return;
-        } else {
-            session.rateLimitViolations = 0;
-        }
+    // Admin users bypass all rate limiting
+    if (clientData && clientData.isAdmin) {
+        socket.broadcast.emit(eventName, data);
+        return;
     }
     
-    socket.broadcast.emit(eventName, data);
+    // Check if user is currently paused
+    if (session.isPaused && now < session.pausedUntil) {
+        const remainingMs = session.pausedUntil - now;
+        console.log(`[${eventName}] User ${socket.id} is paused for ${Math.ceil(remainingMs / 1000)}s more`);
+        return;
+    } else if (session.isPaused && now >= session.pausedUntil) {
+        // Unpause user
+        session.isPaused = false;
+        session.pausedUntil = 0;
+        console.log(`[${eventName}] User ${socket.id} unpause period expired, drawing allowed again`);
+    }
+    
+    // Track drawing events
+    session.drawingEventTimestamps.push(now);
+    session.drawingEventTimestamps10s.push(now);
+    
+    // Clean up old timestamps
+    session.drawingEventTimestamps = session.drawingEventTimestamps.filter(
+        timestamp => now - timestamp < RATE_LIMIT_WINDOW_MS
+    );
+    
+    session.drawingEventTimestamps10s = session.drawingEventTimestamps10s.filter(
+        timestamp => now - timestamp < RATE_LIMIT_WINDOW_10S_MS
+    );
+    
+    const eventsPerSecond = session.drawingEventTimestamps.length;
+    const eventsPer10Seconds = session.drawingEventTimestamps10s.length;
+    
+    // Clean up old violations (fast decay)
+    session.violationTimestamps = session.violationTimestamps.filter(
+        timestamp => now - timestamp < RATE_LIMIT_VIOLATION_WINDOW_MS
+    );
+    
+    // Stage 1: Normal operation
+    if (eventsPerSecond <= RATE_LIMIT_MAX_EVENTS_PER_SECOND && 
+        eventsPer10Seconds <= RATE_LIMIT_MAX_EVENTS_PER_10_SECONDS) {
+        // Good behavior - allow drawing
+        socket.broadcast.emit(eventName, data);
+        return;
+    }
+    
+    // Stage 2: Slightly over limit (35-45/sec) - Warning only
+    if (eventsPerSecond <= RATE_LIMIT_WARNING_THRESHOLD) {
+        // Still allow drawing, just log warning
+        console.log(`[${eventName}] ⚠️  Approaching limit for ${socket.id} - ${eventsPerSecond}/sec`);
+        socket.broadcast.emit(eventName, data);
+        return;
+    }
+    
+    // Stage 3: Moderate excess (45-55/sec) - Throttle
+    if (eventsPerSecond <= RATE_LIMIT_THROTTLE_THRESHOLD) {
+        // Allow every other event through
+        const shouldAllow = eventsPerSecond % 2 === 0;
+        if (shouldAllow) {
+            console.log(`[${eventName}] 🐌 Throttling ${socket.id} - ${eventsPerSecond}/sec`);
+            socket.broadcast.emit(eventName, data);
+        }
+        return;
+    }
+    
+    // Stage 4: High excess (55-70/sec) - Start tracking violations, temp pause
+    if (eventsPerSecond <= RATE_LIMIT_PAUSE_THRESHOLD) {
+        session.violationTimestamps.push(now);
+        const violationCount = session.violationTimestamps.length;
+        
+        if (violationCount >= 2) {
+            // Pause after 2 violations
+            session.isPaused = true;
+            session.pausedUntil = now + 3000; // 3 second pause
+            console.log(`[${eventName}] ⏸️  Pausing ${socket.id} for 3s - violations: ${violationCount}/${RATE_LIMIT_MAX_VIOLATIONS}`);
+            socket.emit('rateLimitWarning', {
+                message: 'Please slow down! Paused for 3 seconds.',
+                violations: violationCount,
+                maxViolations: RATE_LIMIT_MAX_VIOLATIONS,
+                pauseDuration: 3
+            });
+        } else {
+            console.log(`[${eventName}] ⚠️  High rate for ${socket.id} - ${eventsPerSecond}/sec (violation ${violationCount}/${RATE_LIMIT_MAX_VIOLATIONS})`);
+        }
+        return;
+    }
+    
+    // Stage 5: Extreme excess (>70/sec) - Serious violation
+    session.violationTimestamps.push(now);
+    const violationCount = session.violationTimestamps.length;
+    
+    if (violationCount >= RATE_LIMIT_MAX_VIOLATIONS) {
+        // Disconnect after max violations
+        console.log(`[${eventName}] 🚫 Disconnecting ${socket.id} - ${violationCount} serious violations in 10s window`);
+        socket.emit('rateLimitDisconnect', {
+            message: 'Disconnected: Too many rate limit violations',
+            violations: violationCount
+        });
+        socket.disconnect(true);
+        return;
+    }
+    
+    // Long pause for extreme rate
+    session.isPaused = true;
+    session.pausedUntil = now + 5000; // 5 second pause
+    console.log(`[${eventName}] ⏸️  Pausing ${socket.id} for 5s (extreme rate: ${eventsPerSecond}/sec) - violations: ${violationCount}/${RATE_LIMIT_MAX_VIOLATIONS}`);
+    socket.emit('rateLimitWarning', {
+        message: 'Excessive drawing speed! Paused for 5 seconds.',
+        violations: violationCount,
+        maxViolations: RATE_LIMIT_MAX_VIOLATIONS,
+        pauseDuration: 5
+    });
 }
 
 server.listen(PORT, () => {

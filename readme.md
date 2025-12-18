@@ -11,9 +11,20 @@ A lightweight, web-based collaborative drawing application with real-time synchr
   - Secure PIN-based authentication with brute-force protection
   - Lock/unlock board to prevent drawing
   - Bypass cooldown restrictions
-- **Rate Limiting**: 
-  - 5-minute cooldown between canvas resets (for non-admins)
-  - Brute-force protection for admin authentication attempts
+- **Advanced Rate Limiting**: 
+  - **Drawing Speed Control**: Balanced protection that allows natural drawing
+    - Maximum 25 events per second
+    - Initial burst allowance: 15 events in first 500ms (allows a few quick strokes)
+    - Warning threshold at 20 events/second
+  - **Gentle First Warning**: Informative blue notification without pausing
+  - **Escalating Consequences**: Progressive violations tracking
+    - 1st violation: Gentle informational warning (no pause)
+    - 2nd violation: 5-second drawing pause
+    - 3-4 violations: 15-second drawing pause
+    - 5+ violations: 30-second drawing pause
+  - **Visual Feedback**: Progressive warnings with emoji-based severity indicators
+  - **Canvas Reset Cooldown**: 5-minute cooldown between resets (non-admins)
+  - **Brute-force Protection**: Admin authentication attempts are rate-limited
 - **Auto-sync**: New users automatically receive the current drawing state
 
 ## 🚀 Quick Start

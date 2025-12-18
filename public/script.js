@@ -59,6 +59,28 @@ const UPDATE_RATE = 33; // ~30fps (1000ms / 30fps = 33ms)
 // Throttle drawing updates
 let lastDrawTime = 0;
 
+// Client-side rate limiting for immediate throttling (BALANCED LIMITS)
+const CLIENT_RATE_LIMIT_WINDOW = 1000; // 1 second window
+const CLIENT_RATE_LIMIT_MAX_EVENTS = 25; // Max 25 events per second
+const CLIENT_RATE_LIMIT_THROTTLE_THRESHOLD = 20; // Start throttling at 20/sec
+
+// Initial burst protection (allows a few quick strokes at the start)
+const CLIENT_INITIAL_BURST_WINDOW = 500; // 500ms initial window - allows initial drawing freedom
+const CLIENT_INITIAL_BURST_MAX = 15; // Max 15 events in first 500ms - enough for a few quick strokes
+const CLIENT_INITIAL_BURST_WARN = 12; // Warn at 12 events in first 500ms
+
+// Escalating violation tracking
+const VIOLATION_MEMORY_DURATION = 30000; // Remember violations for 30 seconds
+let violationHistory = [];
+let isDrawingPaused = false;
+let drawingPauseTimeout = null;
+let hasReceivedFirstWarning = false; // Track if user has received their first warning
+
+let clientDrawEvents = [];
+let isClientThrottled = false;
+let throttleWarningTimeout = null;
+let drawingSessionStartTime = null; // Track when drawing session starts
+
 // Initialize canvas
 function initCanvas() {
     ctx.lineCap = 'round';
@@ -97,6 +119,363 @@ function drawLine(x0, y0, x1, y1, color) {
     ctx.stroke();
 }
 
+// Track violations and add to history
+function recordViolation() {
+    const now = Date.now();
+    violationHistory.push(now);
+    
+    // Clean up old violations
+    violationHistory = violationHistory.filter(
+        timestamp => now - timestamp < VIOLATION_MEMORY_DURATION
+    );
+    
+    const recentViolations = violationHistory.length;
+    console.log(`[Violation] Recorded - Total in last 30s: ${recentViolations}`);
+    
+    // First violation is just a gentle warning - no pause
+    if (recentViolations === 1 && !hasReceivedFirstWarning) {
+        hasReceivedFirstWarning = true;
+        showGentleWarning();
+        return;
+    }
+    
+    // Escalating consequences for subsequent violations
+    if (recentViolations >= 5) {
+        // 5+ violations: 30 second pause
+        pauseDrawing(30, recentViolations);
+    } else if (recentViolations >= 3) {
+        // 3-4 violations: 15 second pause
+        pauseDrawing(15, recentViolations);
+    } else if (recentViolations >= 2) {
+        // 2 violations: 5 second pause
+        pauseDrawing(5, recentViolations);
+    }
+}
+
+// Show a gentle first-time warning
+function showGentleWarning() {
+    // Remove any existing warning
+    let existingWarning = document.getElementById('gentleWarning');
+    if (existingWarning) {
+        existingWarning.remove();
+    }
+    
+    const warningDiv = document.createElement('div');
+    warningDiv.id = 'gentleWarning';
+    warningDiv.style.cssText = `
+        position: fixed;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(52, 152, 219, 0.95);
+        color: white;
+        padding: 15px 25px;
+        border-radius: 8px;
+        font-size: 16px;
+        font-weight: bold;
+        z-index: 10000;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+        text-align: center;
+        animation: slideDown 0.3s ease-out;
+    `;
+    
+    warningDiv.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 20px;">ℹ️</span>
+            <div>
+                <div>Drawing quickly! Try to pace yourself</div>
+                <div style="font-size: 12px; opacity: 0.9; margin-top: 4px;">
+                    Continued rapid drawing will trigger pauses
+                </div>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(warningDiv);
+    
+    // Auto-remove after 3 seconds
+    setTimeout(() => {
+        warningDiv.style.transition = 'opacity 0.3s, transform 0.3s';
+        warningDiv.style.opacity = '0';
+        warningDiv.style.transform = 'translateX(-50%) translateY(-20px)';
+        setTimeout(() => {
+            if (warningDiv.parentNode) {
+                warningDiv.remove();
+            }
+        }, 300);
+    }, 3000);
+}
+
+// Pause drawing for a specified duration
+function pauseDrawing(seconds, violations) {
+    if (isDrawingPaused) return; // Already paused
+    
+    isDrawingPaused = true;
+    canvas.style.cursor = 'not-allowed';
+    canvas.style.opacity = '0.5';
+    
+    console.log(`[Drawing Paused] ${seconds} seconds - Violations: ${violations}`);
+    
+    showDrawingPauseNotification(seconds, violations);
+    
+    // Clear any existing timeout
+    if (drawingPauseTimeout) {
+        clearTimeout(drawingPauseTimeout);
+    }
+    
+    // Resume drawing after timeout
+    drawingPauseTimeout = setTimeout(() => {
+        isDrawingPaused = false;
+        canvas.style.cursor = 'crosshair';
+        canvas.style.opacity = '1';
+        console.log('[Drawing Resumed] Pause period ended');
+    }, seconds * 1000);
+}
+
+// Show drawing pause notification
+function showDrawingPauseNotification(duration, violations) {
+    // Remove any existing notification
+    let existingNotification = document.getElementById('drawingPauseNotification');
+    if (existingNotification) {
+        existingNotification.remove();
+    }
+    
+    const notification = document.createElement('div');
+    notification.id = 'drawingPauseNotification';
+    notification.style.cssText = `
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: linear-gradient(135deg, rgba(220, 20, 60, 0.95), rgba(178, 34, 34, 0.95));
+        color: white;
+        padding: 30px 40px;
+        border-radius: 15px;
+        font-size: 18px;
+        font-weight: bold;
+        z-index: 10001;
+        box-shadow: 0 8px 16px rgba(0,0,0,0.5);
+        text-align: center;
+        min-width: 350px;
+        animation: popIn 0.3s ease-out;
+        border: 3px solid rgba(255, 255, 255, 0.3);
+    `;
+    
+    let remainingTime = duration;
+    
+    const updateNotification = () => {
+        notification.innerHTML = `
+            <div style="font-size: 48px; margin-bottom: 15px;">🛑</div>
+            <div style="font-size: 22px; margin-bottom: 10px;">DRAWING PAUSED</div>
+            <div style="font-size: 14px; opacity: 0.9; margin-bottom: 15px;">
+                You were drawing too quickly
+            </div>
+            <div style="font-size: 36px; font-weight: bold; color: #FFD700; margin: 20px 0; text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
+                ${remainingTime}s
+            </div>
+            <div style="font-size: 13px; opacity: 0.85; margin-top: 10px;">
+                Recent violations: ${violations}
+            </div>
+            <div style="font-size: 12px; opacity: 0.75; margin-top: 8px;">
+                Please draw more slowly to avoid longer pauses
+            </div>
+        `;
+    };
+    
+    // Add pop-in animation
+    const style = document.createElement('style');
+    style.textContent = `
+        @keyframes popIn {
+            0% {
+                opacity: 0;
+                transform: translate(-50%, -50%) scale(0.8);
+            }
+            50% {
+                transform: translate(-50%, -50%) scale(1.05);
+            }
+            100% {
+                opacity: 1;
+                transform: translate(-50%, -50%) scale(1);
+            }
+        }
+    `;
+    if (!document.head.querySelector('#pauseAnimation')) {
+        style.id = 'pauseAnimation';
+        document.head.appendChild(style);
+    }
+    
+    updateNotification();
+    document.body.appendChild(notification);
+    
+    // Countdown
+    const countdown = setInterval(() => {
+        remainingTime--;
+        if (remainingTime > 0) {
+            updateNotification();
+        } else {
+            clearInterval(countdown);
+            notification.style.transition = 'opacity 0.5s, transform 0.5s';
+            notification.style.opacity = '0';
+            notification.style.transform = 'translate(-50%, -50%) scale(0.8)';
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.remove();
+                }
+            }, 500);
+        }
+    }, 1000);
+}
+
+// Check if client is drawing too fast and should be throttled
+function checkClientRateLimit() {
+    const now = Date.now();
+    
+    // If drawing is paused, block all events
+    if (isDrawingPaused) {
+        console.log('[checkClientRateLimit] Drawing paused - blocking event');
+        return true;
+    }
+    
+    // Check if we're in the initial burst window
+    const isInInitialBurst = drawingSessionStartTime && 
+                             (now - drawingSessionStartTime) < CLIENT_INITIAL_BURST_WINDOW;
+    
+    if (isInInitialBurst) {
+        // Apply stricter initial burst protection
+        const initialBurstEvents = clientDrawEvents.filter(
+            timestamp => timestamp >= drawingSessionStartTime
+        ).length;
+        
+        if (initialBurstEvents >= CLIENT_INITIAL_BURST_MAX) {
+            // Hard block during initial burst - record violation
+            if (!isClientThrottled) {
+                showThrottleWarning('🚨 STOP! Drawing too fast!', initialBurstEvents * 2);
+                recordViolation();
+                isClientThrottled = true;
+            }
+            console.log(`[Initial Burst] Blocking - ${initialBurstEvents} events in ${now - drawingSessionStartTime}ms`);
+            return true; // Block this event
+        } else if (initialBurstEvents >= CLIENT_INITIAL_BURST_WARN) {
+            // Warning during initial burst
+            if (!isClientThrottled) {
+                showThrottleWarning('⚠️ Slow down!', initialBurstEvents * 2);
+                isClientThrottled = true;
+            }
+            // Allow but with warning
+        }
+    }
+    
+    // Clean up old events outside the window
+    clientDrawEvents = clientDrawEvents.filter(
+        timestamp => now - timestamp < CLIENT_RATE_LIMIT_WINDOW
+    );
+    
+    // Add current event
+    clientDrawEvents.push(now);
+    
+    const eventsPerSecond = clientDrawEvents.length;
+    
+    // Standard rate limiting (after initial burst or for longer sessions)
+    if (eventsPerSecond > CLIENT_RATE_LIMIT_MAX_EVENTS) {
+        // Immediate throttle - block this event and record violation
+        if (!isClientThrottled) {
+            showThrottleWarning('🚨 TOO FAST! Blocking...', eventsPerSecond);
+            recordViolation();
+            isClientThrottled = true;
+        }
+        return true; // Block this event
+    } else if (eventsPerSecond > CLIENT_RATE_LIMIT_THROTTLE_THRESHOLD) {
+        // Approaching limit - show warning but allow
+        if (!isClientThrottled) {
+            showThrottleWarning('⚠️ Please slow down!', eventsPerSecond);
+            isClientThrottled = true;
+        }
+        return false; // Allow but warn
+    } else {
+        // Good behavior - reset throttle state
+        if (isClientThrottled) {
+            isClientThrottled = false;
+        }
+        return false; // Allow
+    }
+}
+
+// Show immediate throttle warning
+function showThrottleWarning(message, eventsPerSecond) {
+    // Clear any existing warning timeout
+    if (throttleWarningTimeout) {
+        clearTimeout(throttleWarningTimeout);
+    }
+    
+    // Remove any existing warning
+    let existingWarning = document.getElementById('clientThrottleWarning');
+    if (existingWarning) {
+        existingWarning.remove();
+    }
+    
+    // Create warning element
+    const warningDiv = document.createElement('div');
+    warningDiv.id = 'clientThrottleWarning';
+    warningDiv.style.cssText = `
+        position: fixed;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(255, 87, 34, 0.95);
+        color: white;
+        padding: 15px 25px;
+        border-radius: 8px;
+        font-size: 16px;
+        font-weight: bold;
+        z-index: 10000;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+        text-align: center;
+        animation: slideDown 0.3s ease-out;
+    `;
+    
+    warningDiv.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 20px;">🐌</span>
+            <div>
+                <div>${message}</div>
+                <div style="font-size: 12px; opacity: 0.9; margin-top: 4px;">
+                    ${eventsPerSecond} events/sec
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Add animation
+    const style = document.createElement('style');
+    style.textContent = `
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateX(-50%) translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+        }
+    `;
+    document.head.appendChild(style);
+    
+    document.body.appendChild(warningDiv);
+    
+    // Auto-remove after 2 seconds
+    throttleWarningTimeout = setTimeout(() => {
+        warningDiv.style.transition = 'opacity 0.3s, transform 0.3s';
+        warningDiv.style.opacity = '0';
+        warningDiv.style.transform = 'translateX(-50%) translateY(-20px)';
+        setTimeout(() => {
+            if (warningDiv.parentNode) {
+                warningDiv.remove();
+            }
+        }, 300);
+    }, 2000);
+}
+
 // Start drawing
 function startDrawing(e) {
     e.preventDefault();
@@ -107,6 +486,13 @@ function startDrawing(e) {
     }
     
     isDrawing = true;
+    
+    // Initialize drawing session start time for burst protection
+    if (!drawingSessionStartTime) {
+        drawingSessionStartTime = Date.now();
+        console.log('[startDrawing] New drawing session started - burst protection active');
+    }
+    
     const pos = getEventPos(e);
     lastX = pos.x;
     lastY = pos.y;
@@ -126,6 +512,13 @@ function draw(e) {
     const now = Date.now();
     if (now - lastDrawTime < UPDATE_RATE) return;
     lastDrawTime = now;
+    
+    // Check client-side rate limiting for non-admins
+    if (!isAdmin && checkClientRateLimit()) {
+        // Drawing is being throttled - skip this event
+        console.log('[draw] Client-side throttle active - skipping event');
+        return;
+    }
     
     const pos = getEventPos(e);
     
@@ -153,6 +546,15 @@ function stopDrawing(e) {
     if (!isDrawing) return;
     e.preventDefault();
     isDrawing = false;
+    
+    // Reset drawing session timer after a short delay
+    // This allows a new session to start with fresh burst protection
+    setTimeout(() => {
+        if (!isDrawing) {
+            drawingSessionStartTime = null;
+            console.log('[stopDrawing] Drawing session reset - burst protection will restart on next draw');
+        }
+    }, 1000); // 1 second delay to allow for continuous strokes
 }
 
 // Mouse events
@@ -189,7 +591,7 @@ adminAuthBtn.addEventListener('click', () => {
             return;
         }
         console.log(`[adminAuth] Sending auth request - code: ${code}, clientId: ${clientId}`);
-        socket.emit('adminAuth', { code, clientId });
+        socket.emit('admin-auth', { code, clientId });
     }
 });
 
@@ -320,6 +722,53 @@ socket.on('resetCooldown', (data) => {
 socket.on('resetRejected', (message) => {
     console.log(`[resetRejected] Reset rejected - ${message}`);
     alert(message || 'Reset action is currently disabled');
+});
+
+// Rate limit warning handler
+socket.on('rateLimitWarning', (data) => {
+    console.warn('[rateLimitWarning]', data);
+    const warningDiv = document.createElement('div');
+    warningDiv.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(255, 152, 0, 0.95); color: white; padding: 25px 35px; border-radius: 12px; font-size: 20px; font-weight: bold; z-index: 10000; box-shadow: 0 6px 12px rgba(0,0,0,0.4); text-align: center; min-width: 300px;';
+    
+    const pauseDuration = data.pauseDuration || 5;
+    let remainingTime = pauseDuration;
+    
+    const updateMessage = () => {
+        warningDiv.innerHTML = `
+            <div style="font-size: 32px; margin-bottom: 10px;">⚠️</div>
+            <div style="margin-bottom: 10px;">${data.message.split('!')[0]}</div>
+            <div style="font-size: 28px; font-weight: bold; color: #fff; margin: 15px 0;">
+                ${remainingTime}s
+            </div>
+            <div style="font-size: 14px; opacity: 0.9;">
+                Violations: ${data.violations}/${data.maxViolations}
+            </div>
+            <div style="font-size: 12px; opacity: 0.8; margin-top: 8px;">
+                Drawing will resume automatically
+            </div>
+        `;
+    };
+    
+    updateMessage();
+    document.body.appendChild(warningDiv);
+    
+    const countdown = setInterval(() => {
+        remainingTime--;
+        if (remainingTime > 0) {
+            updateMessage();
+        } else {
+            clearInterval(countdown);
+            warningDiv.style.transition = 'opacity 0.5s';
+            warningDiv.style.opacity = '0';
+            setTimeout(() => warningDiv.remove(), 500);
+        }
+    }, 1000);
+});
+
+// Rate limit disconnect handler
+socket.on('rateLimitDisconnect', (data) => {
+    console.error('[rateLimitDisconnect]', data);
+    alert(`🚫 ${data.message}\n\nYou were drawing too fast (${data.violations} violations). Please refresh the page to reconnect.`);
 });
 
 // Initialize
